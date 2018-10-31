@@ -75,13 +75,22 @@ public:
         : m_tracking(std::make_shared<boost::asynchronous::detail::qt_track>())
         , m_worker(w)
         , m_next_helper_id(0)
-    {}
+    {
+        // set_post_callback_event_type not called
+        assert(m_qt_async_custom_event_id != -1);
+        // set_safe_callback_event_type
+        assert(m_qt_async_safe_callback_custom_event_id != -1);
+    }
     // copy-ctor and operator= are needed for correct tracking
     qt_servant(qt_servant const& rhs)
         : m_tracking(std::make_shared<boost::asynchronous::detail::qt_track>())
         , m_worker(rhs.m_worker)
         , m_next_helper_id(0)
     {
+        // set_post_callback_event_type not called
+        assert(m_qt_async_custom_event_id != -1);
+        // set_safe_callback_event_type
+        assert(m_qt_async_safe_callback_custom_event_id != -1);
     }
     virtual ~qt_servant()
     {
@@ -115,20 +124,16 @@ public:
 
         unsigned long connect_id = m_next_helper_id;
         std::shared_ptr<F2> cbptr(std::make_shared<F2>(std::forward<F2>(cb_func)));
-        std::weak_ptr<boost::asynchronous::detail::qt_track> tracking (m_tracking);
 
         std::shared_ptr<boost::asynchronous::detail::connect_functor_helper> c =
                 std::make_shared<boost::asynchronous::detail::connect_functor_helper>
                 (m_next_helper_id,
-                 [this,connect_id,cbptr,tracking](QEvent* e)
+                 [this,connect_id,cbptr](QEvent* e)
                  {
                     detail::qt_async_custom_event<boost::asynchronous::expected<f1_result_type> >* ce =
                             static_cast<detail::qt_async_custom_event<boost::asynchronous::expected<f1_result_type> >* >(e);
                     (*cbptr)(std::move(ce->m_future));
-                    if (!tracking.expired())
-                    {
-                        this->m_waiting_callbacks.erase(this->m_waiting_callbacks.find(connect_id));
-                    }
+                    this->m_waiting_callbacks.erase(this->m_waiting_callbacks.find(connect_id));
                  }
                );
 
@@ -136,9 +141,11 @@ public:
         ++m_next_helper_id;
         // we want to log if possible
         boost::asynchronous::post_callback(m_worker,
-                                        std::forward<F1>(func),
+                                        boost::asynchronous::check_alive_before_exec(std::move(func),m_tracking),
                                         boost::asynchronous::detail::dymmy_weak_qt_scheduler(),
-                                        boost::asynchronous::detail::qt_post_helper(c.get()),
+                                        boost::asynchronous::check_alive(
+                                               boost::asynchronous::detail::qt_post_helper(c.get(),m_qt_async_custom_event_id),
+                                               m_tracking),
                                         task_name,
                                         post_prio,
                                         cb_prio);
@@ -154,33 +161,31 @@ public:
     {
         typedef decltype(func()) f1_result_type;
         unsigned long connect_id = m_next_helper_id;
-        std::weak_ptr<boost::asynchronous::detail::qt_track> tracking (m_tracking);
 
         std::shared_ptr<F2> cbptr(std::make_shared<F2>(std::forward<F2>(cb_func)));
         std::shared_ptr<boost::asynchronous::detail::connect_functor_helper> c =
                 std::make_shared<boost::asynchronous::detail::connect_functor_helper>
                 (m_next_helper_id,
-                 [this,connect_id,cbptr,tracking](QEvent* e)
+                 [this,connect_id,cbptr](QEvent* e)
                  {
                     detail::qt_async_custom_event<boost::asynchronous::expected<f1_result_type> >* ce =
                             static_cast<detail::qt_async_custom_event<boost::asynchronous::expected<f1_result_type> >* >(e);
                     (*cbptr)(std::move(ce->m_future));
-                    if (!tracking.expired())
-                    {
-                        this->m_waiting_callbacks.erase(this->m_waiting_callbacks.find(connect_id));
-                    }
+                    this->m_waiting_callbacks.erase(this->m_waiting_callbacks.find(connect_id));
                  }
                 );
         m_waiting_callbacks[m_next_helper_id] = c;
         ++m_next_helper_id;
         return boost::asynchronous::interruptible_post_callback(
-                                        m_worker,
-                                        std::forward<F1>(func),
-                                        boost::asynchronous::detail::dymmy_weak_qt_scheduler(),
-                                        boost::asynchronous::detail::qt_post_helper(c.get()),
-                                        task_name,
-                                        post_prio,
-                                        cb_prio);
+                    m_worker,
+                    boost::asynchronous::check_alive_before_exec(std::move(func),m_tracking),
+                    boost::asynchronous::detail::dymmy_weak_qt_scheduler(),
+                    boost::asynchronous::check_alive(
+                           boost::asynchronous::detail::qt_post_helper(c.get(),m_qt_async_custom_event_id),
+                           m_tracking),
+                    task_name,
+                    post_prio,
+                    cb_prio);
     }
 
 
@@ -194,20 +199,16 @@ public:
      -> std::future<typename boost::asynchronous::detail::get_return_type_if_possible_continuation<decltype(func())>::type>
     {
         unsigned long connect_id = m_next_helper_id;
-        std::weak_ptr<boost::asynchronous::detail::qt_track> tracking (m_tracking);
 
         std::shared_ptr<boost::asynchronous::detail::connect_functor_helper> c =
                 std::make_shared<boost::asynchronous::detail::connect_functor_helper>
                 (m_next_helper_id,
-                 [this,connect_id,tracking](QEvent* e)
+                 [this,connect_id](QEvent* e)
                  {
                     detail::qt_async_safe_callback_custom_event* ce =
                             static_cast<detail::qt_async_safe_callback_custom_event* >(e);
                     ce->m_cb();
-                    if (!tracking.expired())
-                    {
-                        this->m_waiting_callbacks.erase(this->m_waiting_callbacks.find(connect_id));
-                    }
+                    this->m_waiting_callbacks.erase(this->m_waiting_callbacks.find(connect_id));
                  }
                );
 
@@ -216,7 +217,10 @@ public:
         // we want to log if possible
         return boost::asynchronous::post_future(
                                         boost::asynchronous::detail::dummy_qt_scheduler(),
-                                        boost::asynchronous::detail::qt_safe_callback_helper(c.get(),std::forward<F1>(func)),
+                                        boost::asynchronous::check_alive(
+                                            boost::asynchronous::detail::qt_safe_callback_helper
+                                                (c.get(),std::forward<F1>(func),m_qt_async_safe_callback_custom_event_id),
+                                            m_tracking),
                                         task_name,
                                         post_prio);
     }
@@ -235,6 +239,25 @@ public:
         return this->make_safe_callback_helper(boost::asynchronous::make_function(std::move(func)),task_name,prio);
     }
 
+    // these 2 statics must be called to avoid Qt event id conflicts
+    // ids are reserved by QEvent::registerEventType()
+    static void set_post_callback_event_type(int id)
+    {
+        m_qt_async_custom_event_id = id;
+    }
+    static void set_safe_callback_event_type(int id)
+    {
+        m_qt_async_safe_callback_custom_event_id = id;
+    }
+
+    /*!
+     * \brief Returns a functor checking if servant is still alive
+     */
+    std::function<bool()> make_check_alive_functor()const
+    {
+        std::weak_ptr<boost::asynchronous::detail::qt_track> tracking (m_tracking);
+        return [tracking](){return !tracking.expired();};
+    }
 
 protected:
     boost::asynchronous::any_shared_scheduler_proxy<WJOB> const& get_worker()const
@@ -292,7 +315,10 @@ private:
                 std::function<void()> safe_cb = boost::asynchronous::move_bind( boost::asynchronous::check_alive([func_ptr](Args... args){(*func_ptr)(std::move(args)...);},tracking),
                         std::move(as)...);
                 boost::asynchronous::post_future(boost::asynchronous::detail::dummy_qt_scheduler(),
-                                                 boost::asynchronous::detail::qt_safe_callback_helper(c.get(),std::move(safe_cb)),
+                                                 boost::asynchronous::check_alive(
+                                                     boost::asynchronous::detail::qt_safe_callback_helper
+                                                        (c.get(),std::move(safe_cb),m_qt_async_safe_callback_custom_event_id),
+                                                     m_tracking),
                                                  task_name,prio);
             }
         };
@@ -307,7 +333,15 @@ private:
     std::map<unsigned long, std::shared_ptr<boost::asynchronous::detail::connect_functor_helper> > m_waiting_callbacks;
     // we support just one id in Qt
     boost::thread::id m_own_thread_id;
+    // create only one id per servant, to reduce number usage
+    static int m_qt_async_custom_event_id;
+    static int m_qt_async_safe_callback_custom_event_id;
 };
+
+template <class WJOB>
+int qt_servant<WJOB>::m_qt_async_custom_event_id=61256;
+template <class WJOB>
+int qt_servant<WJOB>::m_qt_async_safe_callback_custom_event_id=61257;
 
 }}
 
